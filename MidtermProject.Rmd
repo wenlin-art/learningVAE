@@ -1,0 +1,197 @@
+---
+title: "Variational Autoencoders"
+author: "Muskaan Ali, Wenlin Xu, Ashleigh Chen"
+date: "2025-02-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(reticulate)
+use_condaenv("r-reticulate", required = TRUE)
+library(keras)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(MTPS)
+data(HIV)
+library(tensorflow)
+tf$compat$v1$disable_eager_execution() 
+
+set.seed(123)
+```
+
+```{r}
+yBin = as.matrix(YY)
+cutoffs = c(2,3,3,1.5,1.5) # cutoff value to be used to define drug resistance
+for(ii in 1:5) {
+  yBin[,ii] = (10^yBin[,ii] < cutoffs[ii])*1
+}
+```
+
+```{r}
+#Dimension of the latent space
+latent_dim = 10
+
+#Encoder
+#Add a fully connected layer with 128 neurons using the relu activation function.
+encoder_input = layer_input(shape = 228)
+encoder_output = encoder_input %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dense(units = latent_dim * 2)  # mean and variance
+
+```
+
+```{r}
+# Sampling Layer
+sampling = function(arg) {
+  #Define the mean and variance vectors
+  z_mean = arg[, 1:latent_dim]
+  z_log_var = arg[, (latent_dim + 1):(2 * latent_dim)]
+  #sample from N(0,1) for the reparameterization trick
+  epsilon = k_random_normal(shape = c(k_shape(z_mean)[[1]]), mean = 0, stddev = 1)
+  z_mean + k_exp(z_log_var / 2) * epsilon
+}
+z = layer_lambda(encoder_output, sampling)
+```
+
+```{r}
+# Decoder
+decoder_input = layer_input(shape = latent_dim)
+decoder_output = decoder_input %>%
+  #Add a fully connected layer with 128 neurons using the relu activation function.
+  layer_dense(units = 128, activation = "relu") %>%
+  #Add a sigmoid function to constrain the output within the range of 0 to 1.
+  layer_dense(units = 228, activation = "sigmoid")
+```
+
+```{r}
+#Define the loss function
+vae_loss = function(y_true, y_pred) {
+  x_decoded = y_pred[[1]]
+  z_mean = y_pred[[2]]
+  z_log_var = y_pred[[3]]
+  
+  xent_loss = loss_binary_crossentropy(y_true, x_decoded)
+  kl_loss = -0.5 * k_mean(1 + z_log_var - k_square(z_mean) - k_exp(z_log_var), axis = -1L)
+  
+  total_loss = k_mean(xent_loss + kl_loss)
+  return(total_loss)
+}
+
+```
+
+```{r}
+# Build the VAE model
+encoder = keras_model(encoder_input, z)
+decoder = keras_model(decoder_input, decoder_output)
+vae_output = decoder(encoder(encoder_input))
+vae = keras_model(inputs = encoder_input, outputs = vae_output)
+vae %>% compile(optimizer = "adam", loss = vae_loss)
+#summary(encoder)
+#summary(decoder)
+#summary(vae)
+```
+
+```{r Tuning Parameters}
+#Train the VAE model
+history = vae %>% fit(
+  XX, XX,  # Convert input/output to array
+  epochs = 100,
+  batch_size = 32,
+  #20% of the training data are used for validation
+  validation_split = 0.2
+)
+plot(history) + ggtitle('Batch Size 32 Epoch 100')
+
+history2 = vae %>% fit(
+  XX, XX, 
+  epochs = 50,
+  batch_size = 16,
+  validation_split = 0.2
+)
+plot(history2) + ggtitle('Batch Size 16 Epoch 50')
+
+history3 = vae %>% fit(
+  XX, XX, 
+  epochs = 150,
+  batch_size = 128,
+  validation_split = 0.2
+)
+plot(history3) + ggtitle('Batch Size 128 Epoch 150')
+
+history4 = vae %>% fit(
+  XX, XX,  
+  epochs = 150,
+  batch_size = 16,
+  validation_split = 0.2
+)
+plot(history4) + ggtitle('Batch Size 16 Epoch 150')
+
+history5 = vae %>% fit(
+  XX, XX,  
+  epochs = 50,
+  batch_size = 128,
+  validation_split = 0.2
+)
+plot(history5) + ggtitle('Batch Size 128 Epoch 50')
+```
+
+```{r}
+# extract latent features
+latent_features = predict(encoder, XX)
+# check the dimension of latent_features: should be  (1246,latent_dim)
+dim(latent_features)
+# combine latent data and our data set for analysis
+combined_data = cbind(latent_features, yBin)
+
+# visualize the characteristics of the latent distribution
+ggplot(data.frame(latent_features), aes(x = X1, y = X2)) + 
+  geom_point(aes(color = factor(yBin[,1]))) +  #X1,X2 is the first 2 dimension of the latent variable
+  labs(title = "Latent Space (ABC Resistence)")
+ggplot(data.frame(latent_features), aes(x = X1, y = X2)) + 
+  geom_point(aes(color = factor(yBin[,2]))) +  
+  labs(title = "Latent Space (3TC Resistence)")
+ggplot(data.frame(latent_features), aes(x = X1, y = X2)) + 
+  geom_point(aes(color = factor(yBin[,3]))) + 
+  labs(title = "Latent Space (AZT Resistence)")
+ggplot(data.frame(latent_features), aes(x = X1, y = X2)) + 
+  geom_point(aes(color = factor(yBin[,4]))) + 
+  labs(title = "Latent Space (D4T Resistence)")
+ggplot(data.frame(latent_features), aes(x = X1, y = X2)) + 
+  geom_point(aes(color = factor(yBin[,5]))) + 
+  labs(title = "Latent Space (DDI Resistence)")
+```
+
+```{r}
+#Generate new data
+#generate 10 samples
+nsamples = 10
+random_latent_vectors = matrix(rnorm(10 * latent_dim), nrow =nsamples, ncol = latent_dim)
+# decode to generate new data
+generated_X = predict(decoder, random_latent_vectors)
+# change new data to binary type
+XX_new = ifelse(generated_X > 0.5, 1, 0)
+colnames(XX_new) = colnames(XX)
+dim(XX_new)  # Should be (10, feature_dim)
+```
+
+```{r}
+#Predict with new data using LDA model and ABC (drug 1)
+model1 = lda(yBin[,1] ~ ., data.frame(XX))
+pred_drug1 = predict(model1, data.frame(XX_new))$class
+pred_drug1
+
+#Combine new data with original
+XX_combined = rbind(XX, XX_new) 
+```
+
+```{r}
+# the relationship between latent features and YY
+correlation = cor(latent_features, yBin)
+heatmap(correlation, main = "Correlation between Latent Features and yBin")
+```
+
